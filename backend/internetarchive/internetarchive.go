@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ncw/swift/v2"
@@ -31,6 +32,12 @@ import (
 	"github.com/rclone/rclone/lib/pacer"
 	"github.com/rclone/rclone/lib/random"
 	"github.com/rclone/rclone/lib/rest"
+	"golang.org/x/sync/singleflight"
+)
+
+var (
+	metadataCache   sync.Map // map[string]*MetadataResponse
+	metadataSingle  singleflight.Group
 )
 
 // Register with Fs
@@ -1015,22 +1022,38 @@ func (o *Object) split() (bucket, bucketPath string) {
 }
 
 func (f *Fs) requestMetadata(ctx context.Context, bucket string) (result *MetadataResponse, err error) {
-	var resp *http.Response
-	// make a GET request to (frontend)/metadata/:item/
-	opts := rest.Opts{
-		Method: "GET",
-		Path:   path.Join("/metadata/", bucket),
+	// Use singleflight to coalesce identical requests
+	resp, err, shared := metadataSingle.Do(bucket, func() (interface{}, error) {
+		// Check cache first
+		if cached, ok := metadataCache.Load(bucket); ok {
+			fs.Debugf(bucket, "metadata cache hit")
+			return cached.(*MetadataResponse), nil
+		}
+		
+		fs.Debugf(bucket, "metadata cache miss")
+		// Make actual request if not cached
+		var temp MetadataResponse
+		opts := rest.Opts{
+			Path: "/metadata/" + bucket,
+		}
+		_, err := f.front.CallJSON(ctx, &opts, nil, &temp)
+		if err != nil {
+			return nil, err
+		}
+		
+		metadataCache.Store(bucket, &temp)
+		return &temp, nil
+	})
+	
+	if err != nil {
+		return nil, err
 	}
 
-	var temp MetadataResponseRaw
-	err = f.pacer.Call(func() (bool, error) {
-		resp, err = f.front.CallJSON(ctx, &opts, nil, &temp)
-		return f.shouldRetry(resp, err)
-	})
-	if err != nil {
-		return
+	if shared {
+		fs.Debugf(bucket, "metadata request coalesced")
 	}
-	return temp.unraw()
+	
+	return resp.(*MetadataResponse), nil
 }
 
 // list up all files/directories without any filters
