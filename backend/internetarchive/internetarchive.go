@@ -205,7 +205,8 @@ Only enable if you need to be guaranteed to be reflected after write operations.
 }
 
 // maximum size of an item. this is constant across all items
-const iaItemMaxSize int64 = 1099511627776
+// NOTE: 1TiB is the hard max but is not recommended, 320GiB is a compromise
+const iaItemMaxSize int64 = 343597383680
 
 // metadata keys that are not writeable
 var roMetadataKey = map[string]any{
