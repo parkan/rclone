@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"math"
+	"math/rand"
 
 	"github.com/rclone/rclone/backend/union/upstream"
 	"github.com/rclone/rclone/fs"
@@ -14,11 +15,18 @@ func init() {
 
 // EpLno stands for existing path, least number of objects
 // Of all the candidates on which the path exists choose the one with the least number of objects
+// If multiple candidates have the same number of objects, one is chosen randomly.
 type EpLno struct {
 	EpAll
 }
 
 func (p *EpLno) lno(upstreams []*upstream.Fs) (*upstream.Fs, error) {
+	// First shuffle the list to randomize the selection order
+	// This ensures that among backends with equal number of objects, one is chosen randomly
+	rand.Shuffle(len(upstreams), func(i, j int) {
+		upstreams[i], upstreams[j] = upstreams[j], upstreams[i]
+	})
+
 	var minNumObj int64 = math.MaxInt64
 	var lnoUpstream *upstream.Fs
 	for _, u := range upstreams {
@@ -39,6 +47,12 @@ func (p *EpLno) lno(upstreams []*upstream.Fs) (*upstream.Fs, error) {
 }
 
 func (p *EpLno) lnoEntries(entries []upstream.Entry) (upstream.Entry, error) {
+	// First shuffle the list to randomize the selection order
+	// This ensures that among entries with equal number of objects, one is chosen randomly
+	rand.Shuffle(len(entries), func(i, j int) {
+		entries[i], entries[j] = entries[j], entries[i]
+	})
+
 	var minNumObj int64 = math.MaxInt64
 	var lnoEntry upstream.Entry
 	for _, e := range entries {
