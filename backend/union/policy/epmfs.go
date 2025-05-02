@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"math/rand"
 
 	"github.com/rclone/rclone/backend/union/upstream"
 	"github.com/rclone/rclone/fs"
@@ -13,11 +14,18 @@ func init() {
 
 // EpMfs stands for existing path, most free space
 // Of all the candidates on which the path exists choose the one with the most free space.
+// If multiple candidates have the same amount of free space, one is chosen randomly.
 type EpMfs struct {
 	EpAll
 }
 
 func (p *EpMfs) mfs(upstreams []*upstream.Fs) (*upstream.Fs, error) {
+	// First shuffle the list to randomize the selection order
+	// This ensures that among backends with equal free space, one is chosen randomly
+	rand.Shuffle(len(upstreams), func(i, j int) {
+		upstreams[i], upstreams[j] = upstreams[j], upstreams[i]
+	})
+
 	var maxFreeSpace int64
 	var mfsupstream *upstream.Fs
 	for _, u := range upstreams {
@@ -38,6 +46,12 @@ func (p *EpMfs) mfs(upstreams []*upstream.Fs) (*upstream.Fs, error) {
 }
 
 func (p *EpMfs) mfsEntries(entries []upstream.Entry) (upstream.Entry, error) {
+	// First shuffle the list to randomize the selection order
+	// This ensures that among entries with equal free space, one is chosen randomly
+	rand.Shuffle(len(entries), func(i, j int) {
+		entries[i], entries[j] = entries[j], entries[i]
+	})
+
 	var maxFreeSpace int64
 	var mfsEntry upstream.Entry
 	for _, e := range entries {

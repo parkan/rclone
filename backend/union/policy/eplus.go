@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"math"
+	"math/rand"
 
 	"github.com/rclone/rclone/backend/union/upstream"
 	"github.com/rclone/rclone/fs"
@@ -14,11 +15,18 @@ func init() {
 
 // EpLus stands for existing path, least used space
 // Of all the candidates on which the path exists choose the one with the least used space.
+// If multiple candidates have the same amount of used space, one is chosen randomly.
 type EpLus struct {
 	EpAll
 }
 
 func (p *EpLus) lus(upstreams []*upstream.Fs) (*upstream.Fs, error) {
+	// First shuffle the list to randomize the selection order
+	// This ensures that among backends with equal used space, one is chosen randomly
+	rand.Shuffle(len(upstreams), func(i, j int) {
+		upstreams[i], upstreams[j] = upstreams[j], upstreams[i]
+	})
+
 	var minUsedSpace int64 = math.MaxInt64
 	var lusupstream *upstream.Fs
 	for _, u := range upstreams {
@@ -39,6 +47,12 @@ func (p *EpLus) lus(upstreams []*upstream.Fs) (*upstream.Fs, error) {
 }
 
 func (p *EpLus) lusEntries(entries []upstream.Entry) (upstream.Entry, error) {
+	// First shuffle the list to randomize the selection order
+	// This ensures that among entries with equal used space, one is chosen randomly
+	rand.Shuffle(len(entries), func(i, j int) {
+		entries[i], entries[j] = entries[j], entries[i]
+	})
+
 	var minUsedSpace int64 = math.MaxInt64
 	var lusEntry upstream.Entry
 	for _, e := range entries {
