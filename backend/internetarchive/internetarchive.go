@@ -340,6 +340,15 @@ type ModMetadataResponse struct {
 	Error   string `json:"error"`
 }
 
+// TaskResponse represents the response from a task submission API call
+type TaskResponse struct {
+	Success bool `json:"success"`
+	Value   struct {
+		TaskID int    `json:"task_id"`
+		Log    string `json:"log"`
+	} `json:"value"`
+}
+
 // Name of the remote (as passed into NewFs)
 func (f *Fs) Name() string {
 	return f.name
@@ -641,6 +650,19 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 		size:    src.Size(),
 	}
 
+	// Submit a no-op fixer task to avoid snowballing behavior
+	bucket, _ := f.split(src.Remote())
+	if bucket != "" && f.opt.AccessKeyID != "" && f.opt.SecretAccessKey != "" {
+		// Only submit fixer if we have credentials (anonymous users can't submit tasks)
+		err := f.submitFixerTask(ctx, bucket, nil)
+		if err != nil {
+			// Log but continue with upload even if fixer task fails
+			fs.Logf(o, "Failed to submit no-op fixer task: %v", err)
+		} else {
+			fs.Debugf(o, "Submitted no-op fixer task to avoid snowballing")
+		}
+	}
+
 	err := o.Update(ctx, in, src, options...)
 	if err == nil {
 		return o, nil
@@ -903,10 +925,10 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 		return err
 	}
 
-	var mdata fs.Metadata
-	mdata, err = fs.GetMetadataOptions(ctx, o.fs, src, options)
-	if err == nil && mdata != nil {
-		for mk, mv := range mdata {
+	// Get file metadata
+	fileMeta, metaErr := fs.GetMetadataOptions(ctx, o.fs, src, options)
+	if metaErr == nil && fileMeta != nil {
+		for mk, mv := range fileMeta {
 			mk = strings.ToLower(mk)
 			if strings.HasPrefix(mk, "rclone-") {
 				fs.LogPrintf(fs.LogLevelWarning, o, "reserved metadata key %s is about to set", mk)
@@ -1451,6 +1473,73 @@ func trimPathPrefix(s, prefix string, enc encoder.MultiEncoder) string {
 	}
 	prefix = enc.ToStandardPath(strings.TrimRight(prefix, "/"))
 	return enc.ToStandardPath(strings.TrimPrefix(s, prefix+"/"))
+}
+
+// mimics urllib.parse.quote() on Python; exclude / from url.PathEscape
+func quotePath(s string) string {
+	seg := strings.Split(s, "/")
+	newValues := []string{}
+	for _, v := range seg {
+		newValues = append(newValues, url.PathEscape(v))
+	}
+	return strings.Join(newValues, "/")
+}
+
+// submitFixerTask submits a fixer.php task for the specified bucket/item with optional arguments
+// When called with nil args, it works as a no-op task that prevents the "snowballing" behavior
+// where multiple uploads to the same item get combined and delayed
+func (f *Fs) submitFixerTask(ctx context.Context, bucket string, args map[string]string) error {
+	if f.opt.AccessKeyID == "" || f.opt.SecretAccessKey == "" {
+		return errors.New("anonymous users cannot submit tasks, please configure access_key_id and secret_access_key")
+	}
+
+	// If args is nil, use an empty map for a no-op fixer task
+	if args == nil {
+		args = map[string]string{}
+	}
+
+	// Prepare the task payload
+	payload := map[string]interface{}{
+		"identifier": bucket,
+		"cmd":        "fixer.php",
+		"args":       args,
+		"priority":   0, // Default priority
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	// Set up the request to the tasks API
+	opts := rest.Opts{
+		Method:  "POST",
+		Path:    "/services/tasks.php",
+		Body:    bytes.NewReader(payloadBytes),
+		RootURL: f.opt.FrontEndpoint,
+		ExtraHeaders: map[string]string{
+			"Content-Type": "application/json",
+		},
+	}
+
+	// Make the API call
+	var result TaskResponse
+	var resp *http.Response
+	err = f.pacer.Call(func() (bool, error) {
+		resp, err = f.front.CallJSON(ctx, &opts, nil, &result)
+		return f.shouldRetry(resp, err)
+	})
+
+	if err != nil {
+		return err
+	}
+
+	if !result.Success {
+		return fmt.Errorf("failed to submit fixer task: %s", resp.Status)
+	}
+
+	fs.Debugf(f, "Successfully submitted no-op fixer task ID %d for bucket %s", result.Value.TaskID, bucket)
+	return nil
 }
 
 var (
