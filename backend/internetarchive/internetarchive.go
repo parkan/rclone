@@ -594,7 +594,7 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	bucket, _ := f.split(src.Remote())
 	if bucket != "" && f.opt.AccessKeyID != "" && f.opt.SecretAccessKey != "" {
 		// Only submit fixer if we have credentials (anonymous users can't submit tasks)
-		err := f.submitFixerTask(ctx, bucket, nil)
+		err := f.submitFixerNoopTask(ctx, bucket)
 		if err != nil {
 			// Log but continue with upload even if fixer task fails
 			fs.Logf(o, "Failed to submit no-op fixer task: %v", err)
@@ -1390,17 +1390,16 @@ func quotePath(s string) string {
 	return strings.Join(newValues, "/")
 }
 
-// submitFixerTask submits a fixer.php task for the specified bucket/item with optional arguments
-// When called with nil args, it works as a no-op task that prevents the "snowballing" behavior
-// where multiple uploads to the same item get combined and delayed
-func (f *Fs) submitFixerTask(ctx context.Context, bucket string, args map[string]string) error {
+// submitFixerNoopTask submits a fixer.php task with noop=1 for the specified bucket/item
+// This prevents the "snowballing" behavior where multiple uploads to the same item get combined and delayed
+func (f *Fs) submitFixerNoopTask(ctx context.Context, bucket string) error {
 	if f.opt.AccessKeyID == "" || f.opt.SecretAccessKey == "" {
 		return errors.New("anonymous users cannot submit tasks, please configure access_key_id and secret_access_key")
 	}
 
-	// If args is nil, use an empty map for a no-op fixer task
-	if args == nil {
-		args = map[string]string{}
+	// Use noop:1 for a no-op fixer task
+	args := map[string]string{
+		"noop": "1",
 	}
 
 	// Prepare the task payload
