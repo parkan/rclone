@@ -86,7 +86,7 @@ func TestSubmitFixerTask(t *testing.T) {
 	require.NoError(t, err)
 
 	// Test submitting a fixer task
-	err = fsObj.(*Fs).submitFixerTask(ctx, "test_bucket", nil)
+	err = fsObj.(*Fs).submitFixerNoopTask(ctx, "test_bucket")
 	require.NoError(t, err)
 
 	// Verify the task API was called
@@ -96,10 +96,11 @@ func TestSubmitFixerTask(t *testing.T) {
 	assert.Equal(t, "test_bucket", receivedPayload["identifier"])
 	assert.Equal(t, "fixer.php", receivedPayload["cmd"])
 
-	// Ensure args is an empty map (not nil)
+	// Ensure args contains the noop=1 flag
 	args, ok := receivedPayload["args"].(map[string]interface{})
 	assert.True(t, ok, "Args should be a map")
-	assert.Equal(t, 0, len(args), "Args should be an empty map")
+	assert.Equal(t, 1, len(args), "Args should contain one item")
+	assert.Equal(t, "1", args["noop"], "Args should contain noop=1")
 }
 
 // Test that Put calls submitFixerTask
