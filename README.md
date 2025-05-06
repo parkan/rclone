@@ -1,4 +1,4 @@
-
+🚨 **NOTE: This is a fork for internal use at Internet Archive. Others may use at their own risk. For questions, contact: a​r​k​a​d​i​y (symbol) a​r​c​h​i​v​e​.​o​r​g** 🚨
 
 [<img src="https://rclone.org/img/logo_on_light__horizontal_color.svg" width="50%" alt="rclone logo">](https://rclone.org/#gh-light-mode-only)
 [<img src="https://rclone.org/img/logo_on_dark__horizontal_color.svg" width="50%" alt="rclone logo">](https://rclone.org/#gh-dark-mode-only)
