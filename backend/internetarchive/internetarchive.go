@@ -652,15 +652,22 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 
 	// Submit a no-op fixer task to avoid snowballing behavior
 	bucket, _ := f.split(src.Remote())
-	if bucket != "" && f.opt.AccessKeyID != "" && f.opt.SecretAccessKey != "" {
-		// Only submit fixer if we have credentials (anonymous users can't submit tasks)
-		err := f.submitFixerNoopTask(ctx, bucket)
-		if err != nil {
-			// Log but continue with upload even if fixer task fails
-			fs.Logf(o, "Failed to submit no-op fixer task: %v", err)
+	if bucket != "" {
+		if f.opt.AccessKeyID != "" && f.opt.SecretAccessKey != "" {
+			// Only submit fixer if we have credentials (anonymous users can't submit tasks)
+			fs.LogPrintf(fs.LogLevelInfo, o, "Submitting no-op fixer task for bucket %s to avoid snowballing", bucket)
+			err := f.submitFixerNoopTask(ctx, bucket)
+			if err != nil {
+				// Log but continue with upload even if fixer task fails
+				fs.Logf(o, "Failed to submit no-op fixer task: %v", err)
+			} else {
+				fs.Debugf(o, "Submitted no-op fixer task to avoid snowballing")
+			}
 		} else {
-			fs.Debugf(o, "Submitted no-op fixer task to avoid snowballing")
+			fs.LogPrintf(fs.LogLevelInfo, o, "Skipping fixer task - anonymous access doesn't support task submission")
 		}
+	} else {
+		fs.LogPrintf(fs.LogLevelInfo, o, "Skipping fixer task - couldn't determine bucket name from path %q", src.Remote())
 	}
 
 	err := o.Update(ctx, in, src, options...)
@@ -1489,6 +1496,7 @@ func quotePath(s string) string {
 // This prevents the "snowballing" behavior where multiple uploads to the same item get combined and delayed
 func (f *Fs) submitFixerNoopTask(ctx context.Context, bucket string) error {
 	if f.opt.AccessKeyID == "" || f.opt.SecretAccessKey == "" {
+		fs.LogPrintf(fs.LogLevelInfo, f, "Skipping fixer task submission - anonymous users cannot submit tasks")
 		return errors.New("anonymous users cannot submit tasks, please configure access_key_id and secret_access_key")
 	}
 
@@ -1507,6 +1515,7 @@ func (f *Fs) submitFixerNoopTask(ctx context.Context, bucket string) error {
 
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
+		fs.LogPrintf(fs.LogLevelInfo, f, "Failed to marshal fixer task payload: %v", err)
 		return err
 	}
 
@@ -1530,13 +1539,17 @@ func (f *Fs) submitFixerNoopTask(ctx context.Context, bucket string) error {
 	})
 
 	if err != nil {
+		fs.LogPrintf(fs.LogLevelInfo, f, "Failed to submit fixer task: %v", err)
 		return err
 	}
 
 	if !result.Success {
-		return fmt.Errorf("failed to submit fixer task: %s", resp.Status)
+		errMsg := fmt.Sprintf("Failed to submit fixer task: %s", resp.Status)
+		fs.LogPrintf(fs.LogLevelInfo, f, errMsg)
+		return errors.New(errMsg)
 	}
 
+	fs.LogPrintf(fs.LogLevelInfo, f, "Successfully submitted no-op fixer task ID %d for bucket %s", result.Value.TaskID, bucket)
 	fs.Debugf(f, "Successfully submitted no-op fixer task ID %d for bucket %s", result.Value.TaskID, bucket)
 	return nil
 }
