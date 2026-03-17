@@ -488,6 +488,7 @@ func (o *Object) SetModTime(ctx context.Context, t time.Time) (err error) {
 	}
 
 	if result.Success {
+		invalidateMetadata(bucket)
 		o.modTime = t
 		return nil
 	}
@@ -656,8 +657,8 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (_ fs.Objec
 		return nil, err
 	}
 
-	// we can't update/find metadata here as IA will also
-	// queue server-side copy as well as upload/delete.
+	// IA queues server-side copy; invalidate so polling sees fresh metadata
+	invalidateMetadata(dstBucket)
 	return f.waitFileUpload(ctx, trimPathPrefix(path.Join(dstBucket, dstPath), f.root, f.opt.Enc), updateTracker, srcObj.size)
 }
 
@@ -875,11 +876,10 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 		return o.fs.shouldRetry(resp, err)
 	})
 
-	// we can't update/find metadata here as IA will "ingest" uploaded file(s)
-	// upon uploads. (you can find its progress at https://archive.org/history/ItemNameHere )
-	// or we have to wait for finish? (needs polling (frontend)/metadata/:item or scraping (frontend)/history/:item)
+	// IA queues ingestion; invalidate so polling sees fresh metadata
 	var newObj *Object
 	if err == nil {
+		invalidateMetadata(bucket)
 		newObj, err = o.fs.waitFileUpload(ctx, o.remote, updateTracker, size)
 	} else {
 		newObj = &Object{}
@@ -953,9 +953,8 @@ func (o *Object) Remove(ctx context.Context) (err error) {
 		return o.fs.shouldRetry(resp, err)
 	})
 
-	// deleting files can take bit longer as
-	// it'll be processed on same queue as uploads
 	if err == nil {
+		invalidateMetadata(bucket)
 		err = o.fs.waitDelete(ctx, bucket, bucketPath)
 	}
 	return err
@@ -1021,21 +1020,28 @@ func (o *Object) split() (bucket, bucketPath string) {
 	return o.fs.split(o.remote)
 }
 
+func invalidateMetadata(bucket string) {
+	metadataCache.Delete(bucket)
+}
+
 func (f *Fs) requestMetadata(ctx context.Context, bucket string) (result *MetadataResponse, err error) {
-	// Use singleflight to coalesce identical requests
+	// use singleflight to coalesce identical concurrent requests
 	resp, err, shared := metadataSingle.Do(bucket, func() (interface{}, error) {
-		// Check cache first
 		if cached, ok := metadataCache.Load(bucket); ok {
 			fs.Debugf(bucket, "metadata cache hit")
 			return cached.(*MetadataResponse), nil
 		}
-		
+
 		fs.Debugf(bucket, "metadata cache miss")
 		var raw MetadataResponseRaw
 		opts := rest.Opts{
 			Path: "/metadata/" + bucket,
 		}
-		_, err := f.front.CallJSON(ctx, &opts, nil, &raw)
+		var resp *http.Response
+		err := f.pacer.Call(func() (bool, error) {
+			resp, err = f.front.CallJSON(ctx, &opts, nil, &raw)
+			return f.shouldRetry(resp, err)
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -1046,15 +1052,13 @@ func (f *Fs) requestMetadata(ctx context.Context, bucket string) (result *Metada
 		metadataCache.Store(bucket, result)
 		return result, nil
 	})
-	
+
 	if err != nil {
 		return nil, err
 	}
-
 	if shared {
 		fs.Debugf(bucket, "metadata request coalesced")
 	}
-	
 	return resp.(*MetadataResponse), nil
 }
 
@@ -1135,9 +1139,9 @@ func (f *Fs) waitFileUpload(ctx context.Context, reqPath, tracker string, newSiz
 		existed := false
 		for {
 			if !isFirstTime {
-				// depending on the queue, it takes time
 				time.Sleep(10 * time.Second)
 			}
+			invalidateMetadata(bucket)
 			metadata, err := f.requestMetadata(ctx, bucket)
 			if err != nil {
 				retC <- struct {
@@ -1205,6 +1209,7 @@ func (f *Fs) waitDelete(ctx context.Context, bucket, bucketPath string) (err err
 	retC := make(chan error, 1)
 	go func() {
 		for {
+			invalidateMetadata(bucket)
 			metadata, err := f.requestMetadata(ctx, bucket)
 			if err != nil {
 				retC <- err
