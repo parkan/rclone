@@ -1031,18 +1031,20 @@ func (f *Fs) requestMetadata(ctx context.Context, bucket string) (result *Metada
 		}
 		
 		fs.Debugf(bucket, "metadata cache miss")
-		// Make actual request if not cached
-		var temp MetadataResponse
+		var raw MetadataResponseRaw
 		opts := rest.Opts{
 			Path: "/metadata/" + bucket,
 		}
-		_, err := f.front.CallJSON(ctx, &opts, nil, &temp)
+		_, err := f.front.CallJSON(ctx, &opts, nil, &raw)
 		if err != nil {
 			return nil, err
 		}
-		
-		metadataCache.Store(bucket, &temp)
-		return &temp, nil
+		result, err := raw.unraw()
+		if err != nil {
+			return nil, err
+		}
+		metadataCache.Store(bucket, result)
+		return result, nil
 	})
 	
 	if err != nil {
