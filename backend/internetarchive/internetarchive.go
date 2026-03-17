@@ -488,7 +488,7 @@ func (o *Object) SetModTime(ctx context.Context, t time.Time) (err error) {
 	}
 
 	if result.Success {
-		invalidateMetadata(bucket)
+		o.fs.invalidateMetadata(bucket)
 		o.modTime = t
 		return nil
 	}
@@ -658,7 +658,7 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (_ fs.Objec
 	}
 
 	// IA queues server-side copy; invalidate so polling sees fresh metadata
-	invalidateMetadata(dstBucket)
+	f.invalidateMetadata(dstBucket)
 	return f.waitFileUpload(ctx, trimPathPrefix(path.Join(dstBucket, dstPath), f.root, f.opt.Enc), updateTracker, srcObj.size)
 }
 
@@ -879,7 +879,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	// IA queues ingestion; invalidate so polling sees fresh metadata
 	var newObj *Object
 	if err == nil {
-		invalidateMetadata(bucket)
+		o.fs.invalidateMetadata(bucket)
 		newObj, err = o.fs.waitFileUpload(ctx, o.remote, updateTracker, size)
 	} else {
 		newObj = &Object{}
@@ -954,7 +954,7 @@ func (o *Object) Remove(ctx context.Context) (err error) {
 	})
 
 	if err == nil {
-		invalidateMetadata(bucket)
+		o.fs.invalidateMetadata(bucket)
 		err = o.fs.waitDelete(ctx, bucket, bucketPath)
 	}
 	return err
@@ -1020,14 +1020,19 @@ func (o *Object) split() (bucket, bucketPath string) {
 	return o.fs.split(o.remote)
 }
 
-func invalidateMetadata(bucket string) {
-	metadataCache.Delete(bucket)
+func (f *Fs) metadataCacheKey(bucket string) string {
+	return f.opt.FrontEndpoint + "\x00" + bucket
+}
+
+func (f *Fs) invalidateMetadata(bucket string) {
+	metadataCache.Delete(f.metadataCacheKey(bucket))
 }
 
 func (f *Fs) requestMetadata(ctx context.Context, bucket string) (result *MetadataResponse, err error) {
+	key := f.metadataCacheKey(bucket)
 	// use singleflight to coalesce identical concurrent requests
-	resp, err, shared := metadataSingle.Do(bucket, func() (interface{}, error) {
-		if cached, ok := metadataCache.Load(bucket); ok {
+	resp, err, shared := metadataSingle.Do(key, func() (interface{}, error) {
+		if cached, ok := metadataCache.Load(key); ok {
 			fs.Debugf(bucket, "metadata cache hit")
 			return cached.(*MetadataResponse), nil
 		}
@@ -1049,7 +1054,7 @@ func (f *Fs) requestMetadata(ctx context.Context, bucket string) (result *Metada
 		if err != nil {
 			return nil, err
 		}
-		metadataCache.Store(bucket, result)
+		metadataCache.Store(key, result)
 		return result, nil
 	})
 
@@ -1141,7 +1146,7 @@ func (f *Fs) waitFileUpload(ctx context.Context, reqPath, tracker string, newSiz
 			if !isFirstTime {
 				time.Sleep(10 * time.Second)
 			}
-			invalidateMetadata(bucket)
+			f.invalidateMetadata(bucket)
 			metadata, err := f.requestMetadata(ctx, bucket)
 			if err != nil {
 				retC <- struct {
@@ -1209,7 +1214,7 @@ func (f *Fs) waitDelete(ctx context.Context, bucket, bucketPath string) (err err
 	retC := make(chan error, 1)
 	go func() {
 		for {
-			invalidateMetadata(bucket)
+			f.invalidateMetadata(bucket)
 			metadata, err := f.requestMetadata(ctx, bucket)
 			if err != nil {
 				retC <- err
