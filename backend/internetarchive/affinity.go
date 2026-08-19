@@ -1,7 +1,8 @@
+package internetarchive
+
 // read affinity: route reads directly to a chosen copy of an item
 // (primary/secondary datanode or alternate replica) resolved from the
 // metadata record, with fallback to the download redirector.
-package internetarchive
 
 import (
 	"context"
