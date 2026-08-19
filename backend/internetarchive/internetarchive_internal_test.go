@@ -175,7 +175,7 @@ func TestPutCallsFixerTask(t *testing.T) {
 	}
 
 	// Call Put with a dummy reader
-	_, err = fsObj.Put(ctx, strings.NewReader("test data"), src)
+	_, _ = fsObj.Put(ctx, strings.NewReader("test data"), src)
 
 	// The error is expected since our mock doesn't fully simulate the entire upload process
 	// We only care that the fixer task was called

@@ -1482,16 +1482,6 @@ func trimPathPrefix(s, prefix string, enc encoder.MultiEncoder) string {
 	return enc.ToStandardPath(strings.TrimPrefix(s, prefix+"/"))
 }
 
-// mimics urllib.parse.quote() on Python; exclude / from url.PathEscape
-func quotePath(s string) string {
-	seg := strings.Split(s, "/")
-	newValues := []string{}
-	for _, v := range seg {
-		newValues = append(newValues, url.PathEscape(v))
-	}
-	return strings.Join(newValues, "/")
-}
-
 // submitFixerNoopTask submits a fixer.php task with noop=1 for the specified bucket/item
 // This prevents the "snowballing" behavior where multiple uploads to the same item get combined and delayed
 func (f *Fs) submitFixerNoopTask(ctx context.Context, bucket string) error {
