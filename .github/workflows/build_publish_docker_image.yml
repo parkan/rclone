@@ -4,13 +4,8 @@
 
 name: Build & Push Docker Images
 
-# Trigger the workflow on push or pull request
+# fork: docker builds only on manual dispatch
 on:
-  push:
-    branches:
-      - '**'
-    tags:
-      - '**'
   workflow_dispatch:
     inputs:
       manual:
