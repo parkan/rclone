@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"math/rand"
 
 	"github.com/rclone/rclone/backend/union/upstream"
 	"github.com/rclone/rclone/fs"
@@ -15,6 +16,7 @@ func init() {
 
 // EpLfs stands for existing path, least free space
 // Of all the candidates on which the path exists choose the one with the least free space.
+// If multiple candidates have the same amount of free space, one is chosen randomly.
 type EpLfs struct {
 	EpAll
 }
@@ -22,6 +24,12 @@ type EpLfs struct {
 var errNoUpstreamsFound = errors.New("no upstreams found with more than min_free_space space spare")
 
 func (p *EpLfs) lfs(upstreams []*upstream.Fs) (*upstream.Fs, error) {
+	// First shuffle the list to randomize the selection order
+	// This ensures that among backends with equal free space, one is chosen randomly
+	rand.Shuffle(len(upstreams), func(i, j int) {
+		upstreams[i], upstreams[j] = upstreams[j], upstreams[i]
+	})
+
 	var minFreeSpace int64 = math.MaxInt64
 	var lfsupstream *upstream.Fs
 	for _, u := range upstreams {
@@ -42,6 +50,12 @@ func (p *EpLfs) lfs(upstreams []*upstream.Fs) (*upstream.Fs, error) {
 }
 
 func (p *EpLfs) lfsEntries(entries []upstream.Entry) (upstream.Entry, error) {
+	// First shuffle the list to randomize the selection order
+	// This ensures that among entries with equal free space, one is chosen randomly
+	rand.Shuffle(len(entries), func(i, j int) {
+		entries[i], entries[j] = entries[j], entries[i]
+	})
+
 	var minFreeSpace int64 = math.MaxInt64
 	var lfsEntry upstream.Entry
 	for _, e := range entries {
