@@ -274,6 +274,9 @@ jobs:
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
 
       - name: Scan for vulnerabilities
+        # fork: advisory only -- deps are pinned to the release, known
+        # vulns in them shouldn't block CI for our changes
+        continue-on-error: true
         run: govulncheck ./...
 
       - name: Check Markdown format

@@ -36,8 +36,8 @@ import (
 )
 
 var (
-	metadataCache   sync.Map // map[string]*MetadataResponse
-	metadataSingle  singleflight.Group
+	metadataCache  sync.Map // map[string]*MetadataResponse
+	metadataSingle singleflight.Group
 )
 
 // Register with Fs
