@@ -46,6 +46,7 @@ func init() {
 		Name:        "internetarchive",
 		Description: "Internet Archive",
 		NewFs:       NewFs,
+		CommandHelp: commandHelp,
 
 		MetadataInfo: &fs.MetadataInfo{
 			System: map[string]fs.MetadataHelp{
@@ -160,6 +161,25 @@ Owner is able to add custom keys. Metadata feature grabs all the keys including 
 			Default:  "https://archive.org",
 			Advanced: true,
 		}, {
+			Name: "read_affinity",
+			Help: `Prefer a specific serving copy for reads.
+
+Set to "primary", "secondary" or "alternate" to prefer that class of
+copy, or "dc:<code>" to prefer any copy in that datacenter
+(known codes: dc6, dc8, dc2, bcdc, uvic, 330wps, eu).
+
+When set, reads go directly to a matching datanode resolved from the
+item's metadata record, falling back to the standard download
+redirector when no matching copy works. Leave blank to always use the
+redirector (server-side choice).`,
+			Default:  "",
+			Advanced: true,
+		}, {
+			Name:     "read_affinity_strict",
+			Help:     "Fail reads instead of falling back to the redirector when no copy matches read_affinity.",
+			Default:  false,
+			Advanced: true,
+		}, {
 			Name: "item_metadata",
 			Help: `Metadata to be set on the IA item, this is different from file-level metadata that can be set using --metadata-set.
 Format is key=value and the 'x-archive-meta-' prefix is automatically added.`,
@@ -218,26 +238,29 @@ var roMetadataKey = map[string]any{
 
 // Options defines the configuration for this backend
 type Options struct {
-	AccessKeyID     string               `config:"access_key_id"`
-	SecretAccessKey string               `config:"secret_access_key"`
-	Endpoint        string               `config:"endpoint"`
-	FrontEndpoint   string               `config:"front_endpoint"`
-	DisableChecksum bool                 `config:"disable_checksum"`
-	ItemMetadata    []string             `config:"item_metadata"`
-	ItemDerive      bool                 `config:"item_derive"`
-	WaitArchive     fs.Duration          `config:"wait_archive"`
-	Enc             encoder.MultiEncoder `config:"encoding"`
+	AccessKeyID        string               `config:"access_key_id"`
+	SecretAccessKey    string               `config:"secret_access_key"`
+	Endpoint           string               `config:"endpoint"`
+	FrontEndpoint      string               `config:"front_endpoint"`
+	ReadAffinity       string               `config:"read_affinity"`
+	ReadAffinityStrict bool                 `config:"read_affinity_strict"`
+	DisableChecksum    bool                 `config:"disable_checksum"`
+	ItemMetadata       []string             `config:"item_metadata"`
+	ItemDerive         bool                 `config:"item_derive"`
+	WaitArchive        fs.Duration          `config:"wait_archive"`
+	Enc                encoder.MultiEncoder `config:"encoding"`
 }
 
 // Fs represents an IAS3 remote
 type Fs struct {
-	name     string       // name of this remote
-	root     string       // the path we are working on if any
-	opt      Options      // parsed config options
-	features *fs.Features // optional features
-	srv      *rest.Client // the connection to IAS3
-	front    *rest.Client // the connection to frontend
-	pacer    *fs.Pacer    // pacer for API calls
+	name     string            // name of this remote
+	root     string            // the path we are working on if any
+	opt      Options           // parsed config options
+	affinity *affinitySelector // parsed read_affinity, nil = off
+	features *fs.Features      // optional features
+	srv      *rest.Client      // the connection to IAS3
+	front    *rest.Client      // the connection to frontend
+	pacer    *fs.Pacer         // pacer for API calls
 	ctx      context.Context
 }
 
@@ -269,16 +292,45 @@ type IAFile struct {
 	rawData json.RawMessage
 }
 
+// IAServerEntry is one serving copy location in alternate_locations
+type IAServerEntry struct {
+	Server string `json:"server"`
+	Dir    string `json:"dir"`
+}
+
+// IAAlternateLocations lists replica copies outside the primary datacenters
+type IAAlternateLocations struct {
+	Servers  []IAServerEntry `json:"servers"`
+	Workable []IAServerEntry `json:"workable"`
+}
+
 // MetadataResponse represents subset of the JSON object returned by (frontend)/metadata/
 type MetadataResponse struct {
 	Files    []IAFile `json:"files"`
 	ItemSize int64    `json:"item_size"`
+
+	// copy location fields, used by read_affinity
+	Server             string
+	D1                 string
+	D2                 string
+	Dir                string
+	WorkableServers    []string
+	AlternateLocations IAAlternateLocations
 }
 
 // MetadataResponseRaw is the form of MetadataResponse to deal with metadata
 type MetadataResponseRaw struct {
 	Files    []json.RawMessage `json:"files"`
 	ItemSize int64             `json:"item_size"`
+
+	// location fields are undocumented API; kept raw and parsed leniently
+	// so an odd shape can never break listing (affinity is best-effort)
+	Server             json.RawMessage `json:"server"`
+	D1                 json.RawMessage `json:"d1"`
+	D2                 json.RawMessage `json:"d2"`
+	Dir                json.RawMessage `json:"dir"`
+	WorkableServers    json.RawMessage `json:"workable_servers"`
+	AlternateLocations json.RawMessage `json:"alternate_locations"`
 }
 
 // ModMetadataResponse represents response for amending metadata
@@ -361,6 +413,13 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		name: name,
 		opt:  *opt,
 		ctx:  ctx,
+	}
+	f.affinity, err = parseReadAffinity(opt.ReadAffinity)
+	if err != nil {
+		return nil, err
+	}
+	if f.affinity != nil && f.affinity.dc != "" && !knownDatacenter(f.affinity.dc) {
+		fs.Logf(f, "read_affinity datacenter %q is not a known code; it will only match servers resolving to it (use dc:unknown for unrecognized servers)", f.affinity.dc)
 	}
 	f.setRoot(root)
 	f.features = (&fs.Features{
@@ -781,6 +840,18 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 			}
 		}
 		optionsFixed = append(optionsFixed, opt)
+	}
+
+	// affinity-based direct read; correctness never depends on it
+	if o.fs.affinity != nil {
+		in, err = o.openDirect(ctx, optionsFixed)
+		if err == nil {
+			return in, nil
+		}
+		if o.fs.opt.ReadAffinityStrict {
+			return nil, err
+		}
+		fs.Debugf(o, "direct read failed, falling back to redirector: %v", err)
 	}
 
 	var resp *http.Response
@@ -1321,10 +1392,22 @@ func (mrr *MetadataResponseRaw) unraw() (_ *MetadataResponse, err error) {
 		parsed.rawData = raw
 		files = append(files, parsed)
 	}
-	return &MetadataResponse{
+	ret := &MetadataResponse{
 		Files:    files,
 		ItemSize: mrr.ItemSize,
-	}, nil
+	}
+	lenient := func(raw json.RawMessage, dst any) {
+		if len(raw) > 0 {
+			_ = json.Unmarshal(raw, dst)
+		}
+	}
+	lenient(mrr.Server, &ret.Server)
+	lenient(mrr.D1, &ret.D1)
+	lenient(mrr.D2, &ret.D2)
+	lenient(mrr.Dir, &ret.Dir)
+	lenient(mrr.WorkableServers, &ret.WorkableServers)
+	lenient(mrr.AlternateLocations, &ret.AlternateLocations)
+	return ret, nil
 }
 
 func compareSize(a, b int64) bool {
@@ -1377,6 +1460,7 @@ var (
 	_ fs.CleanUpper   = &Fs{}
 	_ fs.PublicLinker = &Fs{}
 	_ fs.Abouter      = &Fs{}
+	_ fs.Commander    = &Fs{}
 	_ fs.Object       = &Object{}
 	_ fs.Metadataer   = &Object{}
 )
